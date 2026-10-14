@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <title>Quest 3 - 1:1 Architektonický Prohlížeč (Offline File Picker)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <!-- Knihovny A-Frame + pohyb + teleportace -->
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.5.0/dist/aframe-extras.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/aframe-blink-controls/dist/aframe-blink-controls.min.js"></script>
+
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #111; color: #eee; }
+    #ui-overlay {
+      position: fixed; top: 20px; left: 20px; z-index: 9999;
+      background: rgba(20, 20, 20, 0.92); padding: 20px 24px; border-radius: 12px;
+      border: 1px solid #333; max-width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    h1 { font-size: 16px; margin: 0 0 8px 0; font-weight: 600; color: #fff; letter-spacing: 0.3px; }
+    p { font-size: 13px; color: #aaa; margin: 0 0 14px 0; line-height: 1.45; }
+    .btn {
+      display: block; background: #fff; color: #000; padding: 12px 16px;
+      border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
+      text-align: center; transition: background 0.15s; border: none; width: 100%; box-sizing: border-box;
+    }
+    .btn:hover { background: #ddd; }
+    .btn-secondary {
+      background: #2a2a2a; color: #ddd; margin-top: 8px; font-weight: 500; font-size: 12px; padding: 8px 12px;
+    }
+    .btn-secondary:hover { background: #3a3a3a; }
+    input[type="file"] { display: none; }
+    #status { margin-top: 12px; font-size: 12px; color: #4ade80; font-family: monospace; word-break: break-all; }
+    .controls-hint { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2a2a2a; font-size: 11.5px; color: #888; line-height: 1.5; }
+    .controls-hint b { color: #ccc; }
+  </style>
+
+  <script>
+    // Komponenta pro plynulé otáčení po krocích (Snap Turn) + výškový posun (výtah po patrech) na pravé páčce
+    AFRAME.registerComponent('quest-right-stick', {
+      schema: {
+        turnAngle: { type: 'number', default: 45 },
+        verticalSpeed: { type: 'number', default: 1.8 }
+      },
+      init: function () {
+        this.snapped = false;
+        this.verticalMove = 0;
+        this.rig = document.querySelector('#rig');
+
+        this.el.addEventListener('thumbstickmoved', (evt) => {
+          const x = evt.detail.x;
+          const y = evt.detail.y;
+
+          // Otáčení po 45 stupních (osa X)
+          if (Math.abs(x) > 0.75) {
+            if (!this.snapped) {
+              const rot = this.rig.getAttribute('rotation');
+              rot.y += (x > 0 ? -this.data.turnAngle : this.data.turnAngle);
+              this.rig.setAttribute('rotation', rot);
+              this.snapped = true;
+            }
+          } else if (Math.abs(x) < 0.3) {
+            this.snapped = false;
+          }
+
+          // Výškový posun - výtah pro rychlý skok do patra (osa Y na pravé páčce)
+          if (Math.abs(y) > 0.5) {
+            this.verticalMove = -y; // dopředu = nahoru, dozadu = dolů
+          } else {
+            this.verticalMove = 0;
+          }
+        });
+      },
+      tick: function (time, timeDelta) {
+        if (this.verticalMove !== 0 && this.rig) {
+          const pos = this.rig.getAttribute('position');
+          pos.y += this.verticalMove * this.data.verticalSpeed * (timeDelta / 1000);
+          this.rig.setAttribute('position', pos);
+        }
+      }
+    });
+  </script>
+</head>
+<body>
+
+  <!-- 2D panel před vstupem do VR -->
+  <div id="ui-overlay">
+    <h1>ArchVR — 1:1 Prohlížeč (.glb)</h1>
+    <p>Vyber 3D model vyexportovaný ze SketchUpu (<b>.glb</b>) uložený v paměti brýlí a pak vpravo dole klikni na tlačítko <b>VR</b>.</p>
+    
+    <label class="btn" for="file-input">Vybrat .GLB model z brýlí</label>
+    <input type="file" id="file-input" accept=".glb,.gltf">
+    
+    <button class="btn btn-secondary" id="reset-pos-btn">Resetovat pozici na [0, 0, 0]</button>
+    
+    <div id="status">Načten výchozí testovací prostor (1:1)</div>
+
+    <div class="controls-hint">
+      <b>Levá páčka / spoušť:</b> Teleport po podlaze (oblouk)<br>
+      <b>Pravá páčka do stran:</b> Otáčení o 45° (Snap Turn)<br>
+      <b>Pravá páčka nahoru/dolů:</b> Výtah (změna výšky/patra)<br>
+      <b>Tlačítko A nebo X:</b> Návrat na počátek [0,0,0]
+    </div>
+  </div>
+
+  <!-- 3D / WebXR Scéna -->
+  <a-scene 
+    renderer="antialias: true; colorManagement: true; physicallyCorrectLights: true; exposure: 1.0;"
+    shadow="type: pcfsoft"
+    xr-mode-ui="enabled: true">
+
+    <!-- Neutrální světlé pozadí (obloha) -->
+    <a-sky color="#e8eef2"></a-sky>
+
+    <!-- Architektonické osvětlení (podobné SketchUp Shaded with Textures) -->
+    <a-entity light="type: ambient; color: #ffffff; intensity: 0.75"></a-entity>
+    <a-entity light="type: directional; color: #fffcf5; intensity: 0.85; castShadow: true" position="15 30 20"></a-entity>
+    <a-entity light="type: directional; color: #d8e4f0; intensity: 0.35" position="-15 10 -15"></a-entity>
+
+    <!-- Kontejner pro model a kolizní plochy teleportu -->
+    <a-entity id="model-wrapper">
+      <!-- Výchozí testovací místnost (zmizí po nahrání vlastního .glb) -->
+      <a-entity id="default-scene" class="teleportable">
+        <a-plane rotation="-90 0 0" width="20" height="20" color="#cccccc" class="teleportable"></a-plane>
+        <a-grid width="20" height="20"></a-grid>
+        <!-- Měřítkový referenční rám (dveřní otvor 90x200 cm a stěna v 1:1) -->
+        <a-box position="-1.2 1.0 -3" width="1.5" height="2.0" depth="0.2" color="#ffffff"></a-box>
+        <a-box position="1.2 1.0 -3" width="1.5" height="2.0" depth="0.2" color="#ffffff"></a-box>
+        <a-box position="0 2.2 -3" width="3.9" height="0.4" depth="0.2" color="#ffffff"></a-box>
+      </a-entity>
+
+      <!-- Sem se načte tvůj .glb model -->
+      <a-entity id="user-model" class="teleportable" position="0 0 0"></a-entity>
+    </a-entity>
+
+    <!-- Hráč / Kamera + Ovladače Quest 3 -->
+    <a-entity id="rig" position="0 0 0" rotation="0 0 0" movement-controls="speed: 0.18; controls: keyboard, touch, gamepad">
+      <!-- Kamera: ve VR si bere reálnou výšku očí od podlahy z Guardianu -->
+      <a-entity id="camera" camera position="0 1.7 0" look-controls="pointerLockEnabled: false"></a-entity>
+
+      <!-- Levý ovladač: Teleportace po modelu (namířit oblouk na podlahu/schody) -->
+      <a-entity id="left-hand"
+        oculus-touch-controls="hand: left"
+        blink-controls="cameraRig: #rig; teleportOrigin: #camera; collisionEntities: .teleportable; hitCylinderColor: #10b981; curveHitColor: #10b981; curveMissColor: #ef4444; curveNumberPoints: 40">
+      </a-entity>
+
+      <!-- Pravý ovladač: Snap Turn (45°) + plynulý výtah nahoru/dolů -->
+      <a-entity id="right-hand"
+        oculus-touch-controls="hand: right"
+        quest-right-stick>
+      </a-entity>
+    </a-entity>
+
+  </a-scene>
+
+  <script>
+    const fileInput = document.getElementById('file-input');
+    const userModel = document.getElementById('user-model');
+    const defaultScene = document.getElementById('default-scene');
+    const statusText = document.getElementById('status');
+    const rig = document.getElementById('rig');
+    const resetBtn = document.getElementById('reset-pos-btn');
+
+    let currentObjectUrl = null;
+
+    function resetPosition() {
+      rig.setAttribute('position', { x: 0, y: 0, z: 0 });
+      rig.setAttribute('rotation', { x: 0, y: 0, z: 0 });
+    }
+
+    resetBtn.addEventListener('click', resetPosition);
+
+    // Tlačítka A (pravý) a X (levý) na ovladačích Questu vrátí kameru na [0,0,0]
+    document.getElementById('right-hand').addEventListener('abuttondown', resetPosition);
+    document.getElementById('left-hand').addEventListener('xbuttondown', resetPosition);
+
+    fileInput.addEventListener('change', function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      statusText.style.color = '#fbbf24';
+      statusText.textContent = 'Načítám model: ' + file.name + ' ...';
+
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+      }
+
+      // Vytvoří lokální paměťovou URL přímo v prohlížeči brýlí (nic se nikam neposílá)
+      currentObjectUrl = URL.createObjectURL(file);
+
+      // Skryjeme výchozí testovací scénu
+      if (defaultScene) {
+        defaultScene.setAttribute('visible', 'false');
+        defaultScene.classList.remove('teleportable');
+      }
+
+      // Nastavíme model
+      userModel.removeAttribute('gltf-model');
+      userModel.setAttribute('gltf-model', currentObjectUrl);
+    });
+
+    userModel.addEventListener('model-loaded', function (ev) {
+      statusText.style.color = '#4ade80';
+      statusText.textContent = 'Model načten 1:1. Klikni vpravo dole na tlačítko VR.';
+
+      // Ošetření oboustranných materiálů (SketchUp občas vyexportuje otočené normály / rubové plochy)
+      const mesh = userModel.getObject3D('mesh');
+      if (mesh) {
+        mesh.traverse(function (node) {
+          if (node.isMesh && node.material) {
+            node.material.side = THREE.DoubleSide;
+          }
+        });
+      }
+
+      // Znovu inicializujeme kolizní plochy pro teleportaci po načtení geometrie
+      const leftHand = document.getElementById('left-hand');
+      if (leftHand && leftHand.components['blink-controls']) {
+        leftHand.components['blink-controls'].updateCollisionEntities();
+      }
+    });
+
+    userModel.addEventListener('model-error', function (ev) {
+      statusText.style.color = '#ef4444';
+      statusText.textContent = 'Chyba při načítání .GLB souboru.';
+    });
+  </script>
+</body>
+</html>
